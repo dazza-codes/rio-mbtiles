@@ -208,10 +208,6 @@ def mbtiles(ctx, files, output, overwrite, title, description,
         for tile in tiles:
             t, contents = process_tile(tile)
 
-            if contents is None:
-                log.info("Tile %r is empty and will be skipped", t)
-                continue
-
             # MBTiles have a different origin than Mercantile/tilebelt.
             tiley = int(math.pow(2, t.z)) - t.y - 1
 

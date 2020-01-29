@@ -64,23 +64,6 @@ def process_tile(tile):
 
         with memfile.open(**kwds) as tmp:
 
-            # determine window of source raster corresponding to the tile
-            # image, with small buffer at edges
-            try:
-                west, south, east, north = transform_bounds(TILES_CRS, src.crs, ulx, lry, lrx, uly)
-                tile_window = window_from_bounds(west, south, east, north, transform=src.transform)
-                adjusted_tile_window = Window(
-                    tile_window.col_off - 1, tile_window.row_off - 1,
-                    tile_window.width + 2, tile_window.height + 2)
-                tile_window = adjusted_tile_window.round_offsets().round_shape()
-
-                # if no data in window, skip processing the tile
-                if not src.read_masks(1, window=tile_window).any():
-                    return tile, None
-
-            except ValueError:
-                log.info("Tile %r will not be skipped, even if empty. This is harmless.", tile)
-
             reproject(rasterio.band(src, tmp.indexes),
                       rasterio.band(tmp, tmp.indexes),
                       src_nodata=src_nodata,

@@ -162,7 +162,7 @@ def test_export_bilinear(tmpdir, data):
     assert len(cur.fetchall()) == 6
 
 
-def test_skip_empty(tmpdir, empty_data):
+def test_process_empty(tmpdir, empty_data):
     """This file has the same shape as RGB.byte.tif, but no data."""
     inputfile = empty_data
     outputfile = str(tmpdir.join('export.mbtiles'))
@@ -174,7 +174,7 @@ def test_skip_empty(tmpdir, empty_data):
     conn = sqlite3.connect(outputfile)
     cur = conn.cursor()
     cur.execute("select * from tiles")
-    assert len(cur.fetchall()) == 0
+    assert len(cur.fetchall()) > 0
 
 
 def test_invalid_format_rgba(tmpdir, empty_data):
