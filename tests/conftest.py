@@ -28,7 +28,7 @@ def pytest_cmdline_main(config):
         sys.exit(1)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def data():
     """A temporary directory containing a copy of the files in data."""
     tmpdir = py.test.ensuretemp("tests/data")
@@ -37,12 +37,12 @@ def data():
     return tmpdir
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def empty_data(tmpdir):
     """A temporary directory containing a folder with an empty data file."""
     filename = test_files[0]
     out_filename = os.path.join(str(tmpdir), "empty.tif")
-    with rasterio.open(filename, "r") as src:
+    with rasterio.open(filename) as src:
         with rasterio.open(out_filename, "w", **src.meta) as dst:
             pass
     return out_filename

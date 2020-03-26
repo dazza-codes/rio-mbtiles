@@ -44,9 +44,7 @@ def test_export_overwrite(tmpdir, data):
     output.write("lolwut")
     outputfile = str(output)
     runner = CliRunner()
-    result = runner.invoke(
-        main_group, ["mbtiles", "--overwrite", inputfile, outputfile]
-    )
+    result = runner.invoke(main_group, ["mbtiles", "--overwrite", inputfile, outputfile])
     assert result.exit_code == 0
     conn = sqlite3.connect(outputfile)
     cur = conn.cursor()
@@ -96,9 +94,7 @@ def test_export_jobs(tmpdir, data):
     inputfile = str(data.join("RGB.byte.tif"))
     outputfile = str(tmpdir.join("export.mbtiles"))
     runner = CliRunner()
-    result = runner.invoke(
-        main_group, ["mbtiles", inputfile, outputfile]
-    )  # , '-j', '4'])
+    result = runner.invoke(main_group, ["mbtiles", inputfile, outputfile])  # , '-j', '4'])
     assert result.exit_code == 0
     conn = sqlite3.connect(outputfile)
     cur = conn.cursor()
@@ -183,7 +179,10 @@ def test_process_empty(tmpdir, empty_data):
     conn = sqlite3.connect(outputfile)
     cur = conn.cursor()
     cur.execute("select * from tiles")
-    assert len(cur.fetchall()) > 0
+    # Original MapBox code outputs no tiles, but this breaks mbview because
+    # the maxzoom is not defined.  The tile records exist with only an empty byte
+    # assert len(cur.fetchall()) == 0
+    assert len(cur.fetchall()) == 6
 
 
 def test_invalid_format_rgba(tmpdir, empty_data):

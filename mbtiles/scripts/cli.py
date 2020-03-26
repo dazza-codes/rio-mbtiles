@@ -8,19 +8,21 @@ import sqlite3
 import click
 import mercantile
 import rasterio
+from rasterio import MemoryFile
 from rasterio.enums import Resampling
 from rasterio.rio.helpers import resolve_inout
 from rasterio.rio.options import output_opt
 from rasterio.rio.options import overwrite_opt
-from rasterio.warp import transform
 
 from mbtiles import __version__ as mbtiles_version
-from mbtiles import init_worker
-from mbtiles import process_tile
+from mbtiles import get_src_bounds_in_wgs84
+from mbtiles import get_src_tiles
+from mbtiles import get_src_zooms
+from mbtiles import reproject_tile
+from mbtiles import src_has_data
+from mbtiles import TILES_CRS  # "EPSG:3857" Web Mercator projection
 
 RESAMPLING_METHODS = [method.name for method in Resampling]
-
-TILES_CRS = "EPSG:3857"
 
 
 def validate_nodata(dst_nodata, src_nodata, meta_nodata):
@@ -103,9 +105,7 @@ def validate_nodata(dst_nodata, src_nodata, meta_nodata):
     help="Resampling method to use.",
 )
 @click.version_option(version=mbtiles_version, message="%(version)s")
-@click.option(
-    "--rgba", default=False, is_flag=True, help="Select RGBA output. For PNG only."
-)
+@click.option("--rgba", default=False, is_flag=True, help="Select RGBA output. For PNG only.")
 @click.pass_context
 def mbtiles(
     ctx,
@@ -145,142 +145,149 @@ def mbtiles(
 
     Python package: rio-mbtiles (https://github.com/mapbox/rio-mbtiles).
     """
-    output, files = resolve_inout(files=files, output=output, overwrite=overwrite)
-    inputfile = files[0]
-
     log = logging.getLogger(__name__)
+
+    output, files = resolve_inout(files=files, output=output, overwrite=overwrite)
+    input_file = files[0]
+
+    # Name and description.
+    title = title or os.path.basename(input_file)
+    description = description or input_file
+
+    # Parameters for creation of tile images.
+    img_ext = "jpg" if img_format.lower() == "jpeg" else "png"
+
+    if rgba:
+        if img_format == "JPEG":
+            raise click.BadParameter("RGBA output is not possible with JPEG format.")
+        else:
+            count = 4
+    else:
+        count = 3
 
     with ctx.obj["env"]:
 
         # Read metadata from the source dataset.
-        with rasterio.open(inputfile) as src:
+        # with rasterio.open(input_file) as src:
+        with open(input_file, 'rb') as f, MemoryFile(f) as mem_file:
+            with mem_file.open() as src:
 
-            validate_nodata(dst_nodata, src_nodata, src.profile.get("nodata"))
-            base_kwds = {"dst_nodata": dst_nodata, "src_nodata": src_nodata}
+                validate_nodata(dst_nodata, src_nodata, src.profile.get("nodata"))
+                base_kwds = {"dst_nodata": dst_nodata, "src_nodata": src_nodata}
 
-            if src_nodata is not None:
-                base_kwds.update(nodata=src_nodata)
+                if src_nodata is not None:
+                    base_kwds.update(nodata=src_nodata)
 
-            if dst_nodata is not None:
-                base_kwds.update(nodata=dst_nodata)
+                if dst_nodata is not None:
+                    base_kwds.update(nodata=dst_nodata)
 
-            # Name and description.
-            title = title or os.path.basename(src.name)
-            description = description or src.name
-
-            # Compute the geographic bounding box of the dataset.
-            (west, east), (south, north) = transform(
-                src.crs, "EPSG:4326", src.bounds[::2], src.bounds[1::2]
-            )
-
-        # Resolve the minimum and maximum zoom levels for export.
-        if zoom_levels:
-            minzoom, maxzoom = map(int, zoom_levels.split(".."))
-        else:
-            zw = int(round(math.log(360.0 / (east - west), 2.0)))
-            zh = int(round(math.log(170.1022 / (north - south), 2.0)))
-            minzoom = min(zw, zh)
-            maxzoom = max(zw, zh)
-
-        log.debug("Zoom range: %d..%d", minzoom, maxzoom)
-
-        if rgba:
-            if img_format == "JPEG":
-                raise click.BadParameter(
-                    "RGBA output is not possible with JPEG format."
+                base_kwds.update(
+                    {
+                        "driver": img_format.upper(),
+                        "dtype": "uint8",
+                        "nodata": 0,
+                        "height": tile_size,
+                        "width": tile_size,
+                        "count": count,
+                        "crs": TILES_CRS,
+                    }
                 )
-            else:
-                count = 4
-        else:
-            count = 3
 
-        # Parameters for creation of tile images.
-        base_kwds.update(
-            {
-                "driver": img_format.upper(),
-                "dtype": "uint8",
-                "nodata": 0,
-                "height": tile_size,
-                "width": tile_size,
-                "count": count,
-                "crs": TILES_CRS,
-            }
-        )
+                # Compute the WGS84 geographic bounding box of the dataset; this
+                # is used to calculate zooms and to set the MBTiles metadata:bounds.
+                west, south, east, north = get_src_bounds_in_wgs84(src)
 
-        img_ext = "jpg" if img_format.lower() == "jpeg" else "png"
+                # Resolve the minimum and maximum zoom levels for export.
+                if zoom_levels:
+                    min_zoom, max_zoom = map(int, zoom_levels.split(".."))
+                else:
+                    min_zoom, max_zoom = get_src_zooms(west, south, east, north)
 
-        # Initialize the sqlite db.
-        if os.path.exists(output):
-            os.unlink(output)
+                log.info("Zoom range: %d..%d", min_zoom, max_zoom)
 
-        # workaround for bug here: https://bugs.python.org/issue27126
-        sqlite3.connect(":memory:").close()
+                # Initialize the sqlite db.
+                if os.path.exists(output):
+                    os.unlink(output)
 
-        conn = sqlite3.connect(output)
-        cur = conn.cursor()
-        cur.execute(
-            "CREATE TABLE tiles "
-            "(zoom_level integer, tile_column integer, "
-            "tile_row integer, tile_data blob);"
-        )
-        cur.execute("CREATE TABLE metadata (name text, value text);")
+                # workaround for bug https://bugs.python.org/issue27126; this is only a problem
+                # with libsqlite3 on OSX (< Sierra ?) with multiprocessing
+                sqlite3.connect(":memory:").close()
 
-        # Insert mbtiles metadata into db.
-        cur.execute(
-            "INSERT INTO metadata (name, value) VALUES (?, ?);", ("name", title)
-        )
-        cur.execute(
-            "INSERT INTO metadata (name, value) VALUES (?, ?);", ("type", layer_type)
-        )
-        cur.execute(
-            "INSERT INTO metadata (name, value) VALUES (?, ?);", ("version", "1.1")
-        )
-        cur.execute(
-            "INSERT INTO metadata (name, value) VALUES (?, ?);",
-            ("description", description),
-        )
-        cur.execute(
-            "INSERT INTO metadata (name, value) VALUES (?, ?);", ("format", img_ext)
-        )
-        cur.execute(
-            "INSERT INTO metadata (name, value) VALUES (?, ?);",
-            ("bounds", "%f,%f,%f,%f" % (west, south, east, north)),
-        )
-        conn.commit()
+                conn = sqlite3.connect(output)
+                cur = conn.cursor()
+                cur.execute("CREATE TABLE metadata (name text, value text);")
+                cur.execute(
+                    "CREATE TABLE tiles "
+                    "(zoom_level integer, tile_column integer, tile_row integer, tile_data blob);"
+                )
+                conn.commit()
 
-        # Constrain bounds.
-        EPS = 1.0e-10
-        west = max(-180 + EPS, west)
-        south = max(-85.051129, south)
-        east = min(180 - EPS, east)
-        north = min(85.051129, north)
+                insert_meta = "INSERT INTO metadata (name, value) VALUES (?, ?);"
+                insert_tile = (
+                    "INSERT INTO tiles "
+                    "(zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);"
+                )
 
-        # Initialize iterator over output tiles.
-        tiles = mercantile.tiles(west, south, east, north, range(minzoom, maxzoom + 1))
+                # Insert mbtiles metadata, see spec details in
+                # https://github.com/mapbox/mbtiles-spec/blob/master/1.1/spec.md#metadata
+                # Insert required key:value pairs
+                cur.execute(insert_meta, ("name", title))
+                cur.execute(insert_meta, ("type", layer_type))
+                cur.execute(insert_meta, ("version", "1.1"))
+                cur.execute(insert_meta, ("description", description))
+                cur.execute(insert_meta, ("format", img_ext))
+                # One row in metadata is suggested and, if provided, may enhance performance.
+                # bounds: The maximum extent of the rendered map area. Bounds must define an
+                # area covered by zoom levels. The bounds are represented in WGS84 (EPSG:4326)
+                # latitude and longitude values, in the OpenLayers Bounds format
+                #
+                # - left, bottom, right, top
+                #
+                # Example of the full earth: -180.0,-85,180,85.
+                cur.execute(insert_meta, ("bounds", "%f,%f,%f,%f" % (west, south, east, north)))
+                conn.commit()
 
-        init_worker(inputfile, base_kwds, resampling)
+                # Initialize iterator over output tiles.
+                tiles = get_src_tiles(west, south, east, north, min_zoom, max_zoom)
 
-        for tile in tiles:
-            t, contents = process_tile(tile)
+                # Check whether the input dataset contains any data
+                has_data = src_has_data(src)
 
-            # MBTiles have a different origin than Mercantile/tilebelt.
-            tile_y = int(math.pow(2, t.z)) - t.y - 1
+                for tile in tiles:
+                    # MBTiles have a different origin than Mercantile.
+                    mbtile_y = int(math.pow(2, tile.z)) - tile.y - 1
 
-            # Optional image dump.
-            if image_dump:
-                img_name = "%d-%d-%d.%s" % (t.x, tile_y, t.z, img_ext)
-                img_path = os.path.join(image_dump, img_name)
-                with open(img_path, "wb") as img:
-                    img.write(contents)
+                    if not has_data:
+                        # Insert empty tile-data into db so the tileset has tile-records.
+                        cur.execute(insert_tile, (tile.z, tile.x, mbtile_y, bytearray()))
+                        conn.commit()
+                        continue
 
-            # Insert tile into db.
-            cur.execute(
-                "INSERT INTO tiles "
-                "(zoom_level, tile_column, tile_row, tile_data) "
-                "VALUES (?, ?, ?, ?);",
-                (t.z, t.x, tile_y, sqlite3.Binary(contents)),
-            )
+                    # TODO: if the min_zoom requested is a larger Tile than the min-zoom for
+                    #  the src, is it possible to simply zero-pad the min-Tile without doing
+                    #  a full projection every time?  Probably not, because the pixel
+                    #  resolution changes with every zoom level.
 
-            conn.commit()
+                    tile_data = reproject_tile(
+                        src, tile, reproject_args=base_kwds, resampling_method=resampling
+                    )
+                    if tile_data is None:
+                        # This tile lands in an area of the src that has no data.
+                        # Insert empty tile into db so the tileset has useful zoom levels.
+                        cur.execute(insert_tile, (tile.z, tile.x, mbtile_y, bytes()))
+                        conn.commit()
+                        continue
 
-        conn.close()
+                    # Optional image dump.
+                    if image_dump:
+                        img_name = "%d-%d-%d.%s" % (tile.x, mbtile_y, tile.z, img_ext)
+                        img_path = os.path.join(image_dump, img_name)
+                        with open(img_path, "wb") as img:
+                            img.write(tile_data)
+
+                    # Insert tile into db.
+                    tile_record = (tile.z, tile.x, mbtile_y, sqlite3.Binary(tile_data))
+                    cur.execute(insert_tile, tile_record)
+                    conn.commit()
+
+                conn.close()
