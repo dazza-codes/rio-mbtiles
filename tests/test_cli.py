@@ -127,7 +127,9 @@ def test_export_dump(tmpdir, data):
         main_group,
         ['mbtiles', inputfile, outputfile, '--image-dump', str(dumpdir)])
     assert result.exit_code == 0
-    assert len(os.listdir(str(dumpdir))) == 6
+    # check image file output count (excluding any metadata files)
+    output_image_files = [f for f in os.listdir(str(dumpdir)) if f.endswith(".jpg")]
+    assert len(output_image_files) == 6
 
 
 @pytest.mark.parametrize('tile_size', [256, 512])
@@ -174,7 +176,7 @@ def test_skip_empty(tmpdir, empty_data):
     conn = sqlite3.connect(outputfile)
     cur = conn.cursor()
     cur.execute("select * from tiles")
-    assert len(cur.fetchall()) == 0
+    assert len(cur.fetchall()) == 6  # each tile-data record has NoData values
 
 
 def test_invalid_format_rgba(tmpdir, empty_data):
