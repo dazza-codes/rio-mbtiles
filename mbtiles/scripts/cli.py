@@ -2,23 +2,30 @@
 
 import logging
 import math
-from multiprocessing import cpu_count, Pool
+import tempfile
+from multiprocessing import cpu_count
 import os
 import sqlite3
+from pathlib import Path
+from threading import Semaphore
 
 import click
+import dask.delayed
 import mercantile
+import psutil
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.rio.helpers import resolve_inout
 from rasterio.rio.options import overwrite_opt, output_opt
 from rasterio.warp import transform
 
-from mbtiles import init_worker, process_tile
+from mbtiles import process_tile
 from mbtiles import __version__ as mbtiles_version
+from mbtiles import TileData
 
+#: physical cores (at least 1, or N cores - 1)
+DEFAULT_NUM_WORKERS = max(1, psutil.cpu_count(logical=False) - 1)
 
-DEFAULT_NUM_WORKERS = cpu_count() - 1
 RESAMPLING_METHODS = [method.name for method in Resampling]
 
 TILES_CRS = 'EPSG:3857'
@@ -105,38 +112,47 @@ def mbtiles(ctx, files, output, overwrite, title, description,
 
     log = logging.getLogger(__name__)
 
+    if image_dump:
+        tile_path = Path(image_dump)
+        tile_path.mkdir(parents=True, exist_ok=True)
+    else:
+        tile_directory = tempfile.TemporaryDirectory(prefix='rio_mbtiles_')
+        tile_path = Path(tile_directory.name)
+
+    log.info("Image outputs path: %s", tile_path)
+    assert tile_path.exists()
+
     with ctx.obj['env']:
 
-        # Read metadata from the source dataset.
-        with rasterio.open(inputfile) as src:
+        src = rasterio.open(inputfile)
 
-            validate_nodata(dst_nodata, src_nodata, src.profile.get('nodata'))
-            base_kwds = {'dst_nodata': dst_nodata, 'src_nodata': src_nodata}
+        validate_nodata(dst_nodata, src_nodata, src.profile.get('nodata'))
+        base_kwds = {'dst_nodata': dst_nodata, 'src_nodata': src_nodata}
 
-            if src_nodata is not None:
-                base_kwds.update(nodata=src_nodata)
+        if src_nodata is not None:
+            base_kwds.update(nodata=src_nodata)
 
-            if dst_nodata is not None:
-                base_kwds.update(nodata=dst_nodata)
+        if dst_nodata is not None:
+            base_kwds.update(nodata=dst_nodata)
 
-            # Name and description.
-            title = title or os.path.basename(src.name)
-            description = description or src.name
+        # Name and description.
+        title = title or os.path.basename(src.name)
+        description = description or title
 
-            # Compute the geographic bounding box of the dataset.
-            (west, east), (south, north) = transform(
-                src.crs, 'EPSG:4326', src.bounds[::2], src.bounds[1::2])
+        # Compute the geographic bounding box of the dataset.
+        (west, east), (south, north) = transform(
+            src.crs, 'EPSG:4326', src.bounds[::2], src.bounds[1::2])
 
         # Resolve the minimum and maximum zoom levels for export.
         if zoom_levels:
-            minzoom, maxzoom = map(int, zoom_levels.split('..'))
+            min_zoom, max_zoom = map(int, zoom_levels.split('..'))
         else:
             zw = int(round(math.log(360.0 / (east - west), 2.0)))
             zh = int(round(math.log(170.1022 / (north - south), 2.0)))
-            minzoom = min(zw, zh)
-            maxzoom = max(zw, zh)
+            min_zoom = min(zw, zh)
+            max_zoom = max(zw, zh)
 
-        log.debug("Zoom range: %d..%d", minzoom, maxzoom)
+        log.debug("Zoom range: %d..%d", min_zoom, max_zoom)
 
         if rgba:
             if img_format == 'JPEG':
@@ -165,6 +181,7 @@ def mbtiles(ctx, files, output, overwrite, title, description,
         # workaround for bug here: https://bugs.python.org/issue27126
         sqlite3.connect(':memory:').close()
 
+        sqlite_semaphore = Semaphore()
         conn = sqlite3.connect(output)
         cur = conn.cursor()
         cur.execute(
@@ -173,6 +190,7 @@ def mbtiles(ctx, files, output, overwrite, title, description,
             "tile_row integer, tile_data blob);")
         cur.execute(
             "CREATE TABLE metadata (name text, value text);")
+        conn.commit()
 
         # Insert mbtiles metadata into db.
         cur.execute(
@@ -196,10 +214,6 @@ def mbtiles(ctx, files, output, overwrite, title, description,
 
         conn.commit()
 
-        # Create a pool of workers to process tile tasks.
-        pool = Pool(num_workers, init_worker,
-                    (inputfile, base_kwds, resampling), 100)
-
         # Constrain bounds.
         EPS = 1.0e-10
         west = max(-180 + EPS, west)
@@ -209,32 +223,56 @@ def mbtiles(ctx, files, output, overwrite, title, description,
 
         # Initialize iterator over output tiles.
         tiles = mercantile.tiles(
-            west, south, east, north, range(minzoom, maxzoom + 1))
+            west, south, east, north, range(min_zoom, max_zoom + 1))
 
-        for tile, contents in pool.imap_unordered(process_tile, tiles):
+        tile_data = []
+        for tile in tiles:
+            # MBTiles have a different origin than Mercantile.
+            mbtile_y = int(math.pow(2, tile.z)) - tile.y - 1
 
-            if contents is None:
-                log.info("Tile %r is empty and will be skipped", tile)
-                continue
+            img_file_name = "%06d_%06d_%06d.%s" % (tile.z, tile.x, mbtile_y, img_ext)
+            img_file_path = tile_path / img_file_name
 
-            # MBTiles have a different origin than Mercantile/tilebelt.
-            tiley = int(math.pow(2, tile.z)) - tile.y - 1
+            td = TileData(
+                tile=tile,
+                img_path=img_file_path,
+                mbtile_y=mbtile_y
+            )
+            tile_data.append(td)
 
-            # Optional image dump.
-            if image_dump:
-                img_name = '%d-%d-%d.%s' % (
-                    tile.x, tiley, tile.z, img_ext)
-                img_path = os.path.join(image_dump, img_name)
-                with open(img_path, 'wb') as img:
-                    img.write(contents)
+        # from dask.distributed import Client
+        # from dask.distributed import LocalCluster
+        # max_workers = min(DEFAULT_NUM_WORKERS, num_workers, 1)
+        # # This only works with threads, because src cannot be serialized to processes
+        # cluster = LocalCluster(n_workers=max_workers, threads_per_worker=1, processes=False)
+        # # This should work with processes, but it's not easy to get processes to share src
+        # # cluster = LocalCluster(n_workers=max_workers, threads_per_worker=1)
+        # client = Client(cluster)
+
+        # dask.delayed defaults to using threads for concurrency, which can share the
+        # same src object, but the process_tile function does not release the GIL, so
+        # this is not as efficient as using processes; it might be efficient if the
+        # src data were loaded into numpy.ndarray and the projections applied entirely
+        # numpy methods that release the GIL.
+        tile_processes = []
+        for td in tile_data:
+            tp = dask.delayed(process_tile)(src, td, base_kwds, resampling)
+            tile_processes.append(tp)
+        dask.delayed(tile_processes).compute()
+        src.close()
+
+        for td in tile_data:
+
+            with open(str(td.img_path), "rb") as img:
+                contents = img.read()
 
             # Insert tile into db.
             cur.execute(
                 "INSERT INTO tiles "
                 "(zoom_level, tile_column, tile_row, tile_data) "
                 "VALUES (?, ?, ?, ?);",
-                (tile.z, tile.x, tiley, sqlite3.Binary(contents)))
-
+                (td.tile.z, td.tile.x, td.mbtile_y, sqlite3.Binary(contents)))
             conn.commit()
 
+        conn.commit()
         conn.close()
