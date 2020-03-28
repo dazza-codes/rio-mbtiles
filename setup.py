@@ -32,6 +32,7 @@ setup(name='rio-mbtiles',
       python_requires='>=2.7.10',
       install_requires=[
           'click',
+          'dask[delayed]~=2.13',
           'mercantile',
           'numpy>=1.10',
           'rasterio~=1.0'
