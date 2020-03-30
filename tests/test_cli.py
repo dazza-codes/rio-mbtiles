@@ -24,8 +24,9 @@ def test_nodata_validation():
         validate_nodata(0, None, None)
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize('filename', ['RGB.byte.tif', 'RGBA.byte.tif'])
-def test_export_metadata(tmpdir, data, filename):
+async def test_export_metadata(tmpdir, data, filename):
     inputfile = str(data.join(filename))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()
@@ -37,7 +38,8 @@ def test_export_metadata(tmpdir, data, filename):
     assert cur.fetchone()[1] == filename
 
 
-def test_export_overwrite(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_overwrite(tmpdir, data):
     """Overwrites existing file"""
     inputfile = str(data.join('RGB.byte.tif'))
     output = tmpdir.join('export.mbtiles')
@@ -53,7 +55,8 @@ def test_export_overwrite(tmpdir, data):
     assert cur.fetchone()[1] == 'RGB.byte.tif'
 
 
-def test_export_metadata_output_opt(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_metadata_output_opt(tmpdir, data):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()
@@ -65,7 +68,8 @@ def test_export_metadata_output_opt(tmpdir, data):
     assert cur.fetchone()[1] == 'RGB.byte.tif'
 
 
-def test_export_tiles(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_tiles(tmpdir, data):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()
@@ -77,7 +81,8 @@ def test_export_tiles(tmpdir, data):
     assert len(cur.fetchall()) == 6
 
 
-def test_export_zoom(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_zoom(tmpdir, data):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()
@@ -91,7 +96,8 @@ def test_export_zoom(tmpdir, data):
     assert len(cur.fetchall()) == 6
 
 
-def test_export_jobs(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_jobs(tmpdir, data):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()
@@ -104,7 +110,8 @@ def test_export_jobs(tmpdir, data):
     assert len(cur.fetchall()) == 6
 
 
-def test_export_src_nodata(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_src_nodata(tmpdir, data):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()
@@ -118,7 +125,8 @@ def test_export_src_nodata(tmpdir, data):
     assert len(cur.fetchall()) == 6
 
 
-def test_export_dump(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_dump(tmpdir, data):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     dumpdir = pytest.ensuretemp('dump')
@@ -132,8 +140,9 @@ def test_export_dump(tmpdir, data):
     assert len(output_image_files) == 6
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize('tile_size', [256, 512])
-def test_export_tile_size(tmpdir, data, tile_size):
+async def test_export_tile_size(tmpdir, data, tile_size):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     dumpdir = pytest.ensuretemp('dump')
@@ -150,7 +159,8 @@ def test_export_tile_size(tmpdir, data, tile_size):
     warnings.resetwarnings()
 
 
-def test_export_bilinear(tmpdir, data):
+@pytest.mark.asyncio
+async def test_export_bilinear(tmpdir, data):
     inputfile = str(data.join('RGB.byte.tif'))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()
@@ -164,7 +174,8 @@ def test_export_bilinear(tmpdir, data):
     assert len(cur.fetchall()) == 6
 
 
-def test_skip_empty(tmpdir, empty_data):
+@pytest.mark.asyncio
+async def test_skip_empty(tmpdir, empty_data):
     """This file has the same shape as RGB.byte.tif, but no data."""
     inputfile = empty_data
     outputfile = str(tmpdir.join('export.mbtiles'))
@@ -179,7 +190,8 @@ def test_skip_empty(tmpdir, empty_data):
     assert len(cur.fetchall()) == 6  # each tile-data record has NoData values
 
 
-def test_invalid_format_rgba(tmpdir, empty_data):
+@pytest.mark.asyncio
+async def test_invalid_format_rgba(tmpdir, empty_data):
     """--format JPEG --rgba is not allowed"""
     inputfile = empty_data
     outputfile = str(tmpdir.join('export.mbtiles'))
@@ -190,8 +202,9 @@ def test_invalid_format_rgba(tmpdir, empty_data):
     assert result.exit_code == 2
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize('filename', ['RGBA.byte.tif'])
-def test_rgba_png(tmpdir, data, filename):
+async def test_rgba_png(tmpdir, data, filename):
     inputfile = str(data.join(filename))
     outputfile = str(tmpdir.join('export.mbtiles'))
     runner = CliRunner()

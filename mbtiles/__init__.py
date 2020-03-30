@@ -43,12 +43,6 @@ def process_tile(
         this dict is copied before it is mutated in the function
     resampling: str
         A resampling method
-
-    Returns
-    -------
-
-    td : TileData
-        The input TileData
     """
     tile = td.tile
     resampling = Resampling[resampling]
@@ -64,6 +58,7 @@ def process_tile(
         ulx, lry, lrx, uly, kwds["width"], kwds["height"]
     )
 
+    # TODO: use an async file open option?
     with rasterio.open(td.img_path, "w", **kwds) as dst:
         reproject(
             rasterio.band(src, dst.indexes),
@@ -73,5 +68,3 @@ def process_tile(
             num_threads=1,
             resampling=resampling,
         )
-
-    return td
